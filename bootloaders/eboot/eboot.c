@@ -246,22 +246,7 @@ int main()
         ets_putc('~');
     }
 
-#if 1
-cmd.action = ACTION_COPY_RAW;
-cmd.args[0] = 0x0009D000;
-cmd.args[1] = 0x00000000;
-cmd.args[2] = 0x0004DB60;
-#endif
-
     if (cmd.action == ACTION_COPY_RAW) {
-        ets_wdt_disable();
-        for (int i=0; i<20; i++) {
-            ets_delay_us(100000);
-            ets_putc('>');
-            }
-        ets_putc('\n');
-        ets_wdt_enable();
-
         ets_putc('c'); ets_putc('p'); ets_putc(':');
 
 #ifdef XMC_SUPPORT
@@ -335,15 +320,6 @@ cmd.args[2] = 0x0004DB60;
             cmd.args[0] = cmd.args[1];
         }
         
-        // give the flash chip time to complete write
-        Wait_SPI_Idle(flashchip);
-        ets_wdt_disable();
-        for (int i=0; i<20; i++) {
-            ets_delay_us(100000);
-            ets_putc('<');
-            }
-        ets_putc('\n');
-        ets_wdt_enable();
     }
 
     if (clear_cmd) {
@@ -352,7 +328,7 @@ cmd.args[2] = 0x0004DB60;
 
     if (cmd.action == ACTION_LOAD_APP) {
         ets_putc('l'); ets_putc('d'); ets_putc('\n');
-        res = 9;//load_app_from_flash_raw(cmd.args[0]);
+        res = load_app_from_flash_raw(cmd.args[0]);
         //we will get to this only on load fail
         ets_putc('e'); ets_putc(':'); ets_putc('0'+res); ets_putc('\n');
     }
