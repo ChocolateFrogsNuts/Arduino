@@ -16,6 +16,7 @@
 #include <uzlib.h>
 
 extern unsigned char _gzip_dict;
+extern void * flashchip;
 
 #define SWRST do { (*((volatile uint32_t*) 0x60000700)) |= 0x80000000; } while(0);
 
@@ -115,10 +116,12 @@ int uzlib_flash_read_cb(struct uzlib_uncomp *m)
 }
 
 unsigned char gzip_dict[32768];
+uint8_t buffer2[FLASH_SECTOR_SIZE]; // no room on stack for this
 
 int copy_raw(const uint32_t src_addr,
              const uint32_t dst_addr,
-             const uint32_t size)
+             const uint32_t size,
+             const bool vrfy)
 {
     // require regions to be aligned
     if ((src_addr & 0xfff) != 0 ||
@@ -158,8 +161,10 @@ int copy_raw(const uint32_t src_addr,
 	gzip = true;
     }
     while (left > 0) {
-        if (SPIEraseSector(daddr/buffer_size)) {
-            return 2;
+        if (!vrfy) {
+           if (SPIEraseSector(daddr/buffer_size)) {
+               return 2;
+           }
         }
         if (!gzip) {
             if (SPIRead(saddr, buffer, buffer_size)) {
@@ -179,8 +184,17 @@ int copy_raw(const uint32_t src_addr,
                 buffer[i] = 0xff;
             }
         }
-        if (SPIWrite(daddr, buffer, buffer_size)) {
-            return 4;
+        if (vrfy) {
+            if (SPIRead(daddr, buffer2, buffer_size)) {
+                return 4;
+            }
+            if (memcmp(buffer, buffer2, buffer_size)) {
+                return 9;
+            }
+        } else {
+            if (SPIWrite(daddr, buffer, buffer_size)) {
+                return 4;
+            }
         }
         saddr += buffer_size;
         daddr += buffer_size;
@@ -190,7 +204,7 @@ int copy_raw(const uint32_t src_addr,
     return 0;
 }
 
-#define XMC_SUPPORT
+//#define XMC_SUPPORT
 #ifdef XMC_SUPPORT
 // Define a few SPI0 registers we need access to
 #define ESP8266_REG(addr) *((volatile uint32_t *)(0x60000000+(addr)))
@@ -232,7 +246,22 @@ int main()
         ets_putc('~');
     }
 
+#if 1
+cmd.action = ACTION_COPY_RAW;
+cmd.args[0] = 0x0009D000;
+cmd.args[1] = 0x00000000;
+cmd.args[2] = 0x0004DB60;
+#endif
+
     if (cmd.action == ACTION_COPY_RAW) {
+        ets_wdt_disable();
+        for (int i=0; i<20; i++) {
+            ets_delay_us(100000);
+            ets_putc('>');
+            }
+        ets_putc('\n');
+        ets_wdt_enable();
+
         ets_putc('c'); ets_putc('p'); ets_putc(':');
 
 #ifdef XMC_SUPPORT
@@ -242,33 +271,46 @@ int main()
         
         uint32_t vendor  = spi_flash_get_id() & 0x000000ff;
         if (vendor == SPI_FLASH_VENDOR_XMC) {
+           ets_putc('X'); ets_putc('M'); ets_putc('C'); ets_putc(':');
+           
            uint32_t flashinfo=0;
            if (SPIRead(0, &flashinfo, 4)) {
               // failed to read the configured flash speed.
-              // Do not change anything,
-           } else {
+              // Do not change anything
+              ets_putc('-');
+           } else if (0) {
               // select an appropriate flash speed
               // Register values are those used by ROM
               switch ((flashinfo >> 24) & 0x0f) {
                  case 0x0: // 40MHz, slow to 20
+                      ets_putc('A');
+                      SPI0CLK = 0x00003043;
+                      SPI0C   = 0x00EAA313;
+                      break;
                  case 0x1: // 26MHz, slow to 20
+                      ets_putc('B');
                       SPI0CLK = 0x00003043;
                       SPI0C   = 0x00EAA313;
                       break;
                  case 0x2: // 20MHz, no change
+                      ets_putc('C');
                       break;
                  case 0xf: // 80MHz, slow to 26
+                      ets_putc('D');
                       SPI0CLK = 0x00002002;
                       SPI0C   = 0x00EAA202;
                       break;
                  default:
+                      ets_putc('E');
                       break;
               }
            }
+           ets_putc('\n');
         }
 #endif // XMC_SUPPORT
+
         ets_wdt_disable();
-        res = copy_raw(cmd.args[0], cmd.args[1], cmd.args[2]);
+        res = copy_raw(cmd.args[0], cmd.args[1], cmd.args[2], false);
         ets_wdt_enable();
         
 #ifdef XMC_SUPPORT
@@ -276,11 +318,32 @@ int main()
         SPI0CLK = spi0clk;
         SPI0C   = spi0c;
 #endif        
+
+        ets_putc('0'+res); ets_putc('\n');
+
+        // Verify the copy
+        ets_putc('c'); ets_putc('m'); ets_putc('p'); ets_putc(':');
+        if (res == 0) {
+            ets_wdt_disable();
+            res = copy_raw(cmd.args[0], cmd.args[1], cmd.args[2], true);
+            ets_wdt_enable();
+            }
+            
         ets_putc('0'+res); ets_putc('\n');
         if (res == 0) {
             cmd.action = ACTION_LOAD_APP;
             cmd.args[0] = cmd.args[1];
         }
+        
+        // give the flash chip time to complete write
+        Wait_SPI_Idle(flashchip);
+        ets_wdt_disable();
+        for (int i=0; i<20; i++) {
+            ets_delay_us(100000);
+            ets_putc('<');
+            }
+        ets_putc('\n');
+        ets_wdt_enable();
     }
 
     if (clear_cmd) {
@@ -289,7 +352,7 @@ int main()
 
     if (cmd.action == ACTION_LOAD_APP) {
         ets_putc('l'); ets_putc('d'); ets_putc('\n');
-        res = load_app_from_flash_raw(cmd.args[0]);
+        res = 9;//load_app_from_flash_raw(cmd.args[0]);
         //we will get to this only on load fail
         ets_putc('e'); ets_putc(':'); ets_putc('0'+res); ets_putc('\n');
     }
