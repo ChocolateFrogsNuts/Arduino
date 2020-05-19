@@ -243,7 +243,6 @@ int main()
             cmd.action = ACTION_LOAD_APP;
             cmd.args[0] = cmd.args[1];
         }
-        
     }
 
     if (clear_cmd) {
